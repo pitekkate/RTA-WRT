@@ -78,13 +78,13 @@ jobs:
           cp /tmp/output/openwrt-*-armvirt-32-*.img.gz /tmp/artifacts/firmware.img.gz
           
           cat > /tmp/artifacts/README.txt << 'EOF'
-# RTA-WRT322x (armvirt/32)
-Built on: $(date)
+          # RTA-WRT322x (armvirt/32)
+          Built on: $(date)
 
-⚠️ RK322x is NOT officially supported.
-✅ Ethernet usually works
-⚠️ Internal WiFi NOT supported — use USB WiFi adapter
-EOF
+          ⚠️ RK322x is NOT officially supported.
+          ✅ Ethernet usually works
+          ⚠️ Internal WiFi NOT supported — use USB WiFi adapter
+          EOF
 
       - name: 📤 Upload Artifacts
         uses: actions/upload-artifact@v4
