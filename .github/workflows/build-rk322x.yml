@@ -2,8 +2,6 @@ name: Build RTA-WRT for RK322x (armvirt/32)
 
 on:
   workflow_dispatch:  # Manual trigger dari GitHub UI
-  schedule:
-    - cron: '0 2 * * 0'  # Build otomatis tiap Minggu jam 2 pagi UTC
 
 env:
   OPENWRT_VERSION: "22.03.7"
