@@ -1,0 +1,161 @@
+name: Build RTA-WRT for RK322x (armvirt/32)
+
+on:
+  workflow_dispatch:  # Manual trigger dari GitHub UI
+  schedule:
+    - cron: '0 2 * * 0'  # Build otomatis tiap Minggu jam 2 pagi UTC
+
+env:
+  OPENWRT_VERSION: "22.03.7"
+  TARGET: "armvirt"
+  SUBTARGET: "32"
+  PROFILE: "Default"  # Profile resmi untuk armvirt/32
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180  # Build OpenWrt butuh waktu
+    
+    steps:
+      - name: ⚙️ Setup Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget curl build-essential \
+            libncurses5-dev zlib1g-dev gawk ccache unzip libssl-dev \
+            xsltproc rsync python3 python3-distutils python3-setuptools \
+            swig libelf-dev asciidoc binutils bzip2 gettext autoconf \
+            automake libtool bison flex jq xz-utils coreutils
+
+      - name: 📥 Checkout RTA-WRT Repo
+        uses: actions/checkout@v4
+
+      - name: 📥 Download OpenWrt ImageBuilder
+        run: |
+          IB_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}/openwrt-imagebuilder-${OPENWRT_VERSION}-${TARGET}-${SUBTARGET}.Linux-x86_64.tar.xz"
+          wget -q --show-progress "$IB_URL" -O /tmp/imagebuilder.tar.xz
+          
+          # Verifikasi ukuran
+          SIZE=$(stat -c%s /tmp/imagebuilder.tar.xz)
+          if [ $SIZE -lt 50000000 ]; then
+            echo "❌ Download gagal (file terlalu kecil: ${SIZE} bytes)"
+            exit 1
+          fi
+          
+          tar -xf /tmp/imagebuilder.tar.xz -C /tmp/
+          IB_DIR="/tmp/openwrt-imagebuilder-${OPENWRT_VERSION}-${TARGET}-${SUBTARGET}.Linux-x86_64"
+          echo "IB_DIR=$IB_DIR" >> $GITHUB_ENV
+
+      - name: 🧩 Apply RTA-WRT Customization
+        run: |
+          # Copy custom packages (skip yang bermasalah)
+          mkdir -p $IB_DIR/packages
+          cp -r packages/* $IB_DIR/packages/ 2>/dev/null || true
+          
+          # Copy files overlay
+          mkdir -p $IB_DIR/files
+          cp -r files/* $IB_DIR/files/ 2>/dev/null || true
+          
+          # Hapus package bermasalah dari feeds
+          sed -i '/luci-theme-argon/d' $IB_DIR/feeds.conf.default
+          sed -i '/luci-app-argon-config/d' $IB_DIR/feeds.conf.default
+
+      - name: 🔨 Build Image (Profile: Default)
+        run: |
+          cd $IB_DIR
+          
+          # Build dengan package yang kompatibel
+          PACKAGES="base-files firewall dnsmasq dropbear opkg uci uhttpd \
+                    luci luci-base luci-mod-status luci-mod-network luci-mod-system \
+                    kmod-usb-core kmod-usb-storage kmod-usb2 kmod-usb3 \
+                    tcpdump nmap htop vim openssh-sftp-server curl wget \
+                    kmod-ipt-offload"
+          
+          make image \
+            PROFILE="$PROFILE" \
+            PACKAGES="$PACKAGES" \
+            FILES="files/" \
+            BIN_DIR="/tmp/output" \
+            2>&1 | tee /tmp/build.log
+          
+          # Cek hasil
+          if [ ! -f /tmp/output/openwrt-*-${TARGET}-${SUBTARGET}-*.img.gz ]; then
+            echo "❌ Build gagal - cek log:"
+            tail -100 /tmp/build.log
+            exit 1
+          fi
+
+      - name: 📦 Prepare Artifacts
+        run: |
+          mkdir -p /tmp/artifacts
+          
+          # Copy firmware
+          cp /tmp/output/openwrt-*-${TARGET}-${SUBTARGET}-*.img.gz /tmp/artifacts/firmware.img.gz
+          
+          # Copy package list
+          cp /tmp/output/openwrt-*-${TARGET}-${SUBTARGET}-*.manifest /tmp/artifacts/packages.manifest 2>/dev/null || true
+          
+          # Buat README
+          cat > /tmp/artifacts/README.txt << 'EOF'
+# RTA-WRT for RK322x (armvirt/32 Adaptation)
+Build Date: $(date)
+
+## ⚠️ IMPORTANT
+- This is an ADAPTATION for RK322x using armvirt/32 target
+- RK322x is NOT officially supported by RTA-WRT
+- Hardware compatibility may vary:
+  ✅ Ethernet usually works
+  ⚠️ Internal WiFi (SSV6051/ESP8089) NOT supported → use USB WiFi adapter
+  ✅ USB storage & 4G modems usually work
+
+## 🔧 Flashing Instructions
+1. Decompress:
+   gunzip firmware.img.gz
+
+2. Enter maskrom mode on RK322x:
+   - Unplug power
+   - Press hidden reset button (small hole on back)
+   - Plug USB A-to-A cable to PC
+   - Verify: lsusb | grep 2207 → should show "2207:320b"
+
+3. Flash:
+   sudo rkdeveloptool db rk322x_loader_v1.10.256.bin
+   sudo rkdeveloptool wl 0x0 firmware.img
+   sudo rkdeveloptool rd
+
+## 🔐 Default Login
+- IP: 192.168.1.1
+- User: root
+- Password: (empty)
+
+## 📦 Package List
+See: packages.manifest
+EOF
+
+      - name: 📤 Upload Artifacts to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: rta-wrt-rk322x-${{ env.OPENWRT_VERSION }}
+          path: /tmp/artifacts/
+          retention-days: 30
+
+      - name: 🚀 Create GitHub Release (Tag-based)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: /tmp/artifacts/*
+          tag_name: v${{ env.OPENWRT_VERSION }}-rk322x
+          name: RTA-WRT for RK322x (armvirt/32)
+          body: |
+            OpenWrt ${{ env.OPENWRT_VERSION }} adapted for RK322x devices
+            
+            ⚠️ WARNING: RK322x is NOT officially supported. Use at your own risk!
+            
+            ✅ Ethernet support (usually works)
+            ⚠️ Internal WiFi NOT supported (use USB adapter)
+            ✅ USB storage & 4G modem support
+            
+            Flashing instructions in README.txt
+            
+            Built on: ${{ github.run_id }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
