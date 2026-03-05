@@ -1,94 +1,80 @@
-name: RTA-WRT for RK322x (armvirt/32)
+name: Build OpenWrt for RK322x (armvirt/32)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 2 * * 0'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: ⚙️ Setup Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y git wget curl build-essential \
-            libncurses5-dev zlib1g-dev gawk ccache unzip libssl-dev \
-            xsltproc rsync python3 python3-distutils python3-setuptools \
-            swig libelf-dev asciidoc binutils bzip2 gettext autoconf \
-            automake libtool bison flex jq xz-utils coreutils
+          sudo apt-get install -y wget xz-utils
 
-      - name: 📥 Checkout Repo
-        uses: actions/checkout@v4
-
-      - name: 📥 Download OpenWrt ImageBuilder
-        id: download_ib
+      - name: 📥 Download OpenWrt ImageBuilder 22.03.7
         run: |
-          IB_URL="https://downloads.openwrt.org/releases/22.03.7/targets/armvirt/32/openwrt-imagebuilder-22.03.7-armvirt-32.Linux-x86_64.tar.xz"
-          wget -q --show-progress "$IB_URL" -O /tmp/imagebuilder.tar.xz
-          
-          # Verifikasi ukuran
-          SIZE=$(stat -c%s /tmp/imagebuilder.tar.xz)
-          if [ $SIZE -lt 50000000 ]; then
-            echo "❌ Download gagal (file terlalu kecil: ${SIZE} bytes)"
-            exit 1
-          fi
-          
-          tar -xf /tmp/imagebuilder.tar.xz -C /tmp/
-          IB_DIR="/tmp/openwrt-imagebuilder-22.03.7-armvirt-32.Linux-x86_64"
-          echo "IB_DIR=$IB_DIR" >> $GITHUB_ENV
-          echo "IB_DIR=$IB_DIR"
+          wget https://downloads.openwrt.org/releases/22.03.7/targets/armvirt/32/openwrt-imagebuilder-22.03.7-armvirt-32.Linux-x86_64.tar.xz
+          tar -xf openwrt-imagebuilder-*.tar.xz
+          echo "IB_DIR=$(pwd)/openwrt-imagebuilder-22.03.7-armvirt-32.Linux-x86_64" >> $GITHUB_ENV
 
-      - name: 🧩 Apply RTA-WRT Customization
+      - name: 🔨 Build Minimal Image (Profile: Default)
         run: |
-          mkdir -p "${{ env.IB_DIR }}/packages"
-          cp -r packages/* "${{ env.IB_DIR }}/packages/" 2>/dev/null || true
+          cd ${{ env.IB_DIR }}
           
-          mkdir -p "${{ env.IB_DIR }}/files"
-          cp -r files/* "${{ env.IB_DIR }}/files/" 2>/dev/null || true
-          
-          # Hapus package bermasalah
-          sed -i '/luci-theme-argon/d' "${{ env.IB_DIR }}/feeds.conf.default"
-          sed -i '/luci-app-argon-config/d' "${{ env.IB_DIR }}/feeds.conf.default"
-
-      - name: 🔨 Build Image
-        run: |
-          cd "${{ env.IB_DIR }}"
-          
-          PACKAGES="base-files firewall dnsmasq dropbear opkg uci uhttpd luci luci-basei-mod-status luci-mod-network luci-mod-system kmod-usb-core kmod-usb-storage kmod-usb2 kmod-usb3 tcpdump nmap htop vim openssh-sftp-server curl wget kmod-ipt-offload"
-          
+          # Build dengan package minimal yang pasti kompatibel
           make image \
             PROFILE=Default \
-            PACKAGES="$PACKAGES" \
-            FILES="files/" \
-            BIN_DIR="/tmp/output" \
-            2>&1 | tee /tmp/build.log
+            PACKAGES="luci luci-base luci-mod-network luci-mod-system luci-theme-bootstrap \
+                      kmod-usb-core kmod-usb2 kmod-usb3 kmod-usb-storage block-mount \
+                      tcpdump nmap htop vim openssh-sftp-server" \
+            BIN_DIR="${{ github.workspace }}/output" \
+            2>&1 | tee build.log
           
-          if [ ! -f /tmp/output/openwrt-*-armvirt-32-*.img.gz ]; then
-            echo "❌ Build gagal"
-            tail -20 /tmp/build.log
+          # Verifikasi hasil
+          if [ ! -f ${{ github.workspace }}/output/openwrt-*-armvirt-32-*.img.gz ]; then
+            echo "❌ Build failed - last 30 lines of log:"
+            tail -30 build.log
             exit 1
           fi
+          echo "✅ Build successful!"
+          ls -lh ${{ github.workspace }}/output/
 
       - name: 📦 Prepare Artifacts
         run: |
-          mkdir -p /tmp/artifacts
-          cp /tmp/output/openwrt-*-armvirt-32-*.img.gz /tmp/artifacts/firmware.img.gz
+          mkdir -p artifacts
+          cp ${{ github.workspace }}/output/openwrt-*-armvirt-32-*.img.gz artifacts/firmware.img.gz
           
-          cat > /tmp/artifacts/README.txt << 'EOF'
-          # RTA-WRT322x (armvirt/32)
-          Built on: $(date)
+          # Buat README sederhana
+          cat > artifacts/README.txt << 'EOF'
+          # OpenWrt 22.03.7 for RK322x (armvirt/32)
 
-          ⚠️ RK322x is NOT officially supported.
+          ⚠️ RK322x is NOT officially supported by OpenWrt.
+          This is an experimental adaptation using generic armvirt target.
+
           ✅ Ethernet usually works
-          ⚠️ Internal WiFi NOT supported — use USB WiFi adapter
+          ⚠️ Internal WiFi (SSV6051/ESP8089) NOT supported → use USB WiFi adapter
+          ✅ USB storage & 4G modems usually work
+
+          ## Flashing Instructions
+          1. Decompress: gunzip firmware.img.gz
+          2. Enter maskrom mode on RK322x (press reset button + plug USB A-to-A)
+          3. Flash:
+             sudo rkdeveloptool db rk322x_loader_v1.10.256.bin
+             sudo rkdeveloptool wl 0x0 firmware.img
+             sudo rkdeveloptool rd
+
+          ## Default Login
+          - IP: 192.168.1.1
+          - User: root
+          - Password: (empty)
           EOF
 
       - name: 📤 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rta-wrt-rk322x-22.03.7
-          path: /tmp/artifacts/
-          retention-days: 30
+          name: openwrt-rk322x-22.03.7
+          path: artifacts/
+          retention-days: 7
